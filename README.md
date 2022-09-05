@@ -14,6 +14,11 @@ Run api server
 * activate conda environment for the repo `conda activate ldw`
 * run `python scripts/kdiff_api.py`
 
+How to use plugin
+* Make background layer invisible. `inpaint` use alpha channel as a mask
+* Select some region with Rectangular Selection Tool, size of the selection will be used as size of model output
+* Use one of the three buttons the plugin provide
+
 Have fun
 
 Thanks to CompVis and Stability AI for releasing this codebase!
