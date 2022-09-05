@@ -8,26 +8,24 @@ from PIL import Image, ImageOps
 from tqdm import tqdm, trange
 from itertools import islice
 from einops import rearrange, repeat
-from torchvision.utils import make_grid
-import time
 from pytorch_lightning import seed_everything, LightningModule
 from torch import autocast
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 import accelerate
 import mimetypes
+
 mimetypes.init()
 mimetypes.add_type('application/javascript', '.js')
- 
- 
+
 import k_diffusion as K
 from ldm.util import instantiate_from_config
- 
- 
+
+
 def chunk(it, size):
     it = iter(it)
     return iter(lambda: tuple(islice(it, size)), ())
- 
- 
+
+
 def load_model_from_config(config, ckpt, verbose=False) -> LightningModule:
     print(f"Loading model from {ckpt}")
     pl_sd = torch.load(ckpt, map_location="cpu")
@@ -42,7 +40,7 @@ def load_model_from_config(config, ckpt, verbose=False) -> LightningModule:
     if len(u) > 0 and verbose:
         print("unexpected keys:")
         print(u)
- 
+
     model.cuda()
     model.eval()
     return model
@@ -89,21 +87,21 @@ def _sample_lms_masked(model, x, x_orig, mask, noise, sigmas, extra_args=None, c
         x_orig_noised = x_orig + noise * sigmas[i]
         x = (x_orig_noised * mask) + (x * (1 - mask))
     return x
- 
- 
+
+
 class CFGDenoiser(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.inner_model = model
- 
+
     def forward(self, x, sigma, uncond, cond, cond_scale):
         x_in = torch.cat([x] * 2)
         sigma_in = torch.cat([sigma] * 2)
         cond_in = torch.cat([uncond, cond])
         uncond, cond = self.inner_model(x_in, sigma_in, cond=cond_in).chunk(2)
         return uncond + (cond - uncond) * cond_scale
- 
- 
+
+
 config = OmegaConf.load("configs/stable-diffusion/v1-inference.yaml")
 model = load_model_from_config(config, "models/ldm/stable-diffusion-v1/model.ckpt")
 
@@ -115,41 +113,6 @@ def dream(prompt: str, ddim_steps: int, n_iter: int, n_samples: int, cfg_scale: 
           height: int):
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser()
- 
-    parser.add_argument(
-        "--outdir",
-        type=str,
-        nargs="?",
-        help="dir to write results to",
-        default="outputs/txt2img-samples"
-    )
-    parser.add_argument(
-        "--skip_grid",
-        action='store_true',
-        help="do not save a grid, only individual samples. Helpful when evaluating lots of samples",
-    )
-    parser.add_argument(
-        "--skip_save",
-        action='store_true',
-        help="do not save individual samples. For speed measurements.",
-    )
-    parser.add_argument(
-        "--laion400m",
-        action='store_true',
-        help="uses the LAION400M model",
-    )
-    parser.add_argument(
-        "--H",
-        type=int,
-        default=height,
-        help="image height, in pixel space",
-    )
-    parser.add_argument(
-        "--W",
-        type=int,
-        default=width,
-        help="image width, in pixel space",
-    )
     parser.add_argument(
         "--C",
         type=int,
@@ -163,29 +126,6 @@ def dream(prompt: str, ddim_steps: int, n_iter: int, n_samples: int, cfg_scale: 
         help="downsampling factor",
     )
     parser.add_argument(
-        "--n_rows",
-        type=int,
-        default=0,
-        help="rows in the grid (default: n_samples)",
-    )
-    parser.add_argument(
-        "--from-file",
-        type=str,
-        help="if specified, load prompts from this file",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/stable-diffusion/v1-inference.yaml",
-        help="path to config which constructs model",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default="models/ldm/stable-diffusion-v1/model.ckpt",
-        help="path to checkpoint of model",
-    )
-    parser.add_argument(
         "--precision",
         type=str,
         help="evaluate at this precision",
@@ -193,50 +133,26 @@ def dream(prompt: str, ddim_steps: int, n_iter: int, n_samples: int, cfg_scale: 
         default="autocast"
     )
     opt = parser.parse_args()
- 
-    if opt.laion400m:
-        print("Falling back to LAION 400M model...")
-        opt.config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
-        opt.ckpt = "models/ldm/text2img-large/model.ckpt"
-        opt.outdir = "outputs/txt2img-samples-laion400m"
- 
+
     accelerator = accelerate.Accelerator()
     device = accelerator.device
     rng_seed = seed_everything(seed)
     seeds = torch.randint(-2 ** 63, 2 ** 63 - 1, [accelerator.num_processes])
     torch.manual_seed(seeds[accelerator.process_index].item())
- 
- 
+
     model_wrap = K.external.CompVisDenoiser(model)
- 
-    os.makedirs(opt.outdir, exist_ok=True)
-    outpath = opt.outdir
- 
+
     batch_size = n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
-    if not opt.from_file:
-        assert prompt is not None
-        data = [batch_size * [prompt]]
- 
-    else:
-        print(f"reading prompts from {opt.from_file}")
-        with open(opt.from_file, "r") as f:
-            data = f.read().splitlines()
-            data = list(chunk(data, batch_size))
- 
-    sample_path = os.path.join(outpath, "samples")
-    os.makedirs(sample_path, exist_ok=True)
-    base_count = len(os.listdir(sample_path))
-    grid_count = len(os.listdir(outpath)) - 1
+    assert prompt is not None
+    data = [batch_size * [prompt]]
     seedit = 0
- 
-    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+
+    precision_scope = autocast if opt.precision == "autocast" else nullcontext
     output_images = []
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                all_samples = list()
-                for n in trange(n_iter, desc="Sampling", disable =not accelerator.is_main_process):
+                for n in trange(n_iter, desc="Sampling", disable=not accelerator.is_main_process):
                     for prompts in tqdm(data, desc="data", disable=not accelerator.is_main_process):
                         uc = None
                         if cfg_scale != 1.0:
@@ -244,41 +160,25 @@ def dream(prompt: str, ddim_steps: int, n_iter: int, n_samples: int, cfg_scale: 
                         if isinstance(prompts, tuple):
                             prompts = list(prompts)
                         c = model.get_learned_conditioning(prompts)
-                        shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
- 
+                        shape = [opt.C, height // opt.f, width // opt.f]
+
                         sigmas = model_wrap.get_sigmas(ddim_steps)
                         torch.manual_seed(rng_seed + seedit)
                         x = torch.randn([n_samples, *shape], device=device) * sigmas[0]
                         model_wrap_cfg = CFGDenoiser(model_wrap)
                         extra_args = {'cond': c, 'uncond': uc, 'cond_scale': cfg_scale}
-                        samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args=extra_args, disable=not accelerator.is_main_process)
+                        samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args=extra_args,
+                                                             disable=not accelerator.is_main_process)
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                        x_samples_ddim = accelerator.gather(x_samples_ddim)                        
- 
+                        x_samples_ddim = accelerator.gather(x_samples_ddim)
+
                         if accelerator.is_main_process:
                             for x_sample in x_samples_ddim:
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                                 image = Image.fromarray(x_sample.astype(np.uint8))
-                                if not opt.skip_save:
-                                    image.save(os.path.join(sample_path, f"{base_count:05}-{rng_seed + seedit}_{prompt.replace(' ', '_')[:128]}.png"))
                                 output_images.append(image)
-                                base_count += 1
                                 seedit += 1
- 
-                        if accelerator.is_main_process and not opt.skip_grid:
-                            all_samples.append(x_samples_ddim)
- 
-                if accelerator.is_main_process and not opt.skip_grid:
-                    # additionally, save as grid
-                    grid = torch.stack(all_samples, 0)
-                    grid = rearrange(grid, 'n b c h w -> (n b) c h w')
-                    grid = make_grid(grid, nrow=n_rows)
- 
-                    # to image
-                    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-                    Image.fromarray(grid.astype(np.uint8)).save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
-                    grid_count += 1
 
     return output_images, rng_seed
 
@@ -287,26 +187,6 @@ def translation(prompt: str, init_img, ddim_steps: int, n_iter: int, n_samples: 
                 denoising_strength: float, seed: int, width: int, height: int):
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser()
- 
-    parser.add_argument(
-        "--outdir",
-        type=str,
-        nargs="?",
-        help="dir to write results to",
-        default="outputs/img2img-samples"
-    )
- 
-    parser.add_argument(
-        "--skip_grid",
-        action='store_true',
-        help="do not save a grid, only individual samples. Helpful when evaluating lots of samples",
-    )
- 
-    parser.add_argument(
-        "--skip_save",
-        action='store_true',
-        help="do not save indiviual samples. For speed measurements.",
-    )
     parser.add_argument(
         "--C",
         type=int,
@@ -320,64 +200,25 @@ def translation(prompt: str, init_img, ddim_steps: int, n_iter: int, n_samples: 
         help="downsampling factor, most often 8 or 16",
     )
     parser.add_argument(
-        "--n_rows",
-        type=int,
-        default=0,
-        help="rows in the grid (default: n_samples)",
-    )
-    parser.add_argument(
-        "--from-file",
-        type=str,
-        help="if specified, load prompts from this file",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/stable-diffusion/v1-inference.yaml",
-        help="path to config which constructs model",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default="models/ldm/stable-diffusion-v1/model.ckpt",
-        help="path to checkpoint of model",
-    )
-    parser.add_argument(
         "--precision",
         type=str,
         help="evaluate at this precision",
         choices=["full", "autocast"],
         default="autocast"
     )
- 
+
     opt = parser.parse_args()
- 
+
     accelerator = accelerate.Accelerator()
     device = accelerator.device
     rng_seed = seed_everything(seed)
     seeds = torch.randint(-2 ** 63, 2 ** 63 - 1, [accelerator.num_processes])
     torch.manual_seed(seeds[accelerator.process_index].item())
     model_wrap = K.external.CompVisDenoiser(model)
- 
-    os.makedirs(opt.outdir, exist_ok=True)
-    outpath = opt.outdir
- 
+
     batch_size = n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
-    if not opt.from_file:
-        prompt = prompt
-        assert prompt is not None
-        data = [batch_size * [prompt]]
-    else:
-        print(f"reading prompts from {opt.from_file}")
-        with open(opt.from_file, "r") as f:
-            data = f.read().splitlines()
-            data = list(chunk(data, batch_size))
- 
-    sample_path = os.path.join(outpath, "samples")
-    os.makedirs(sample_path, exist_ok=True)
-    base_count = len(os.listdir(sample_path))
-    grid_count = len(os.listdir(outpath)) - 1
+    assert prompt is not None
+    data = [batch_size * [prompt]]
     seedit = 0
 
     init_image = prepare_image(init_img, width, height)
@@ -390,13 +231,11 @@ def translation(prompt: str, init_img, ddim_steps: int, n_iter: int, n_samples: 
             init_image = repeat(init_image, '1 ... -> b ...', b=batch_size)
             init_latent = model.get_first_stage_encoding(model.encode_first_stage(init_image))  # move to latent space
             x0 = init_latent
- 
+
             assert 0. <= denoising_strength <= 1., 'can only work with strength in [0.0, 1.0]'
             t_enc = int(denoising_strength * ddim_steps)
             print(f"target t_enc is {t_enc} steps")
             with model.ema_scope():
-                tic = time.time()
-                all_samples = list()
                 for n in trange(n_iter, desc="Sampling", disable=not accelerator.is_main_process):
                     for prompts in tqdm(data, desc="data", disable=not accelerator.is_main_process):
                         uc = None
@@ -405,7 +244,7 @@ def translation(prompt: str, init_img, ddim_steps: int, n_iter: int, n_samples: 
                         if isinstance(prompts, tuple):
                             prompts = list(prompts)
                         c = model.get_learned_conditioning(prompts)
- 
+
                         sigmas = model_wrap.get_sigmas(ddim_steps)
                         torch.manual_seed(rng_seed + seedit)
                         noise = torch.randn_like(x0) * sigmas[ddim_steps - t_enc - 1]
@@ -413,35 +252,18 @@ def translation(prompt: str, init_img, ddim_steps: int, n_iter: int, n_samples: 
                         sigma_sched = sigmas[ddim_steps - t_enc - 1:]
                         model_wrap_cfg = CFGDenoiser(model_wrap)
                         extra_args = {'cond': c, 'uncond': uc, 'cond_scale': cfg_scale}
-                        samples_ddim = K.sampling.sample_lms(model_wrap_cfg, xi, sigma_sched, extra_args=extra_args, disable=not accelerator.is_main_process)
+                        samples_ddim = K.sampling.sample_lms(model_wrap_cfg, xi, sigma_sched, extra_args=extra_args,
+                                                             disable=not accelerator.is_main_process)
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                         x_samples_ddim = accelerator.gather(x_samples_ddim)
- 
+
                         if accelerator.is_main_process:
                             for x_sample in x_samples_ddim:
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                                 image = Image.fromarray(x_sample.astype(np.uint8))
-                                if not opt.skip_save:
-                                    image.save(os.path.join(sample_path, f"{base_count:05}-{rng_seed + seedit}_{prompt.replace(' ', '_')[:128]}.png"))
                                 output_images.append(image)
-                                base_count += 1
                                 seedit += 1
- 
-                        if accelerator.is_main_process and not opt.skip_grid:
-                            all_samples.append(x_samples_ddim)
- 
-                if not opt.skip_grid:
-                    # additionally, save as grid
-                    grid = torch.stack(all_samples, 0)
-                    grid = rearrange(grid, 'n b c h w -> (n b) c h w')
-                    grid = make_grid(grid, nrow=n_rows)
- 
-                    # to image
-                    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-                    Image.fromarray(grid.astype(np.uint8)).save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
-                    Image.fromarray(grid.astype(np.uint8))
-                    grid_count += 1
 
     return output_images, rng_seed
 
@@ -450,26 +272,6 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
                seed: int, width: int, height: int):
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--outdir",
-        type=str,
-        nargs="?",
-        help="dir to write results to",
-        default="outputs/img2img-samples"
-    )
-
-    parser.add_argument(
-        "--skip_grid",
-        action='store_true',
-        help="do not save a grid, only individual samples. Helpful when evaluating lots of samples",
-    )
-
-    parser.add_argument(
-        "--skip_save",
-        action='store_true',
-        help="do not save indiviual samples. For speed measurements.",
-    )
     parser.add_argument(
         "--C",
         type=int,
@@ -481,29 +283,6 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
         type=int,
         default=8,
         help="downsampling factor, most often 8 or 16",
-    )
-    parser.add_argument(
-        "--n_rows",
-        type=int,
-        default=0,
-        help="rows in the grid (default: n_samples)",
-    )
-    parser.add_argument(
-        "--from-file",
-        type=str,
-        help="if specified, load prompts from this file",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/stable-diffusion/v1-inference.yaml",
-        help="path to config which constructs model",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default="models/ldm/stable-diffusion-v1/model.ckpt",
-        help="path to checkpoint of model",
     )
     parser.add_argument(
         "--precision",
@@ -523,25 +302,9 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
 
     model_wrap = K.external.CompVisDenoiser(model)
 
-    os.makedirs(opt.outdir, exist_ok=True)
-    outpath = opt.outdir
-
     batch_size = n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
-    if not opt.from_file:
-        prompt = prompt
-        assert prompt is not None
-        data = [batch_size * [prompt]]
-    else:
-        print(f"reading prompts from {opt.from_file}")
-        with open(opt.from_file, "r") as f:
-            data = f.read().splitlines()
-            data = list(chunk(data, batch_size))
-
-    sample_path = os.path.join(outpath, "samples")
-    os.makedirs(sample_path, exist_ok=True)
-    base_count = len(os.listdir(sample_path))
-    grid_count = len(os.listdir(outpath)) - 1
+    assert prompt is not None
+    data = [batch_size * [prompt]]
     seedit = 0
 
     init_image = prepare_image(init_img, width, height)
@@ -564,7 +327,6 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
             assert mask.shape == x0.shape, 'Mask shape should be same as input'
 
             with model.ema_scope():
-                all_samples = list()
                 for n in trange(n_iter, desc="Sampling", disable=not accelerator.is_main_process):
                     for prompts in tqdm(data, desc="data", disable=not accelerator.is_main_process):
                         uc = None
@@ -575,16 +337,17 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
                         c = model.get_learned_conditioning(prompts)
 
                         sigmas = model_wrap.get_sigmas(ddim_steps)
-                        torch.manual_seed(rng_seed + seedit)  # changes manual seeding procedure
+                        torch.manual_seed(rng_seed + seedit)
                         noise = torch.randn_like(x0)
-                        noise_i = noise * sigmas[0]  # for GPU draw
+                        noise_i = noise * sigmas[0]
                         xi = x0 + noise_i
                         xi = (xi * mask) + (noise_i * (1 - mask))
                         sigma_sched = sigmas[0:]
                         model_wrap_cfg = CFGDenoiser(model_wrap)
                         extra_args = {'cond': c, 'uncond': uc, 'cond_scale': cfg_scale}
-                        samples_ddim = _sample_lms_masked(model_wrap_cfg, xi, x0, mask, noise, sigma_sched, extra_args=extra_args,
-                                                             disable=not accelerator.is_main_process)
+                        samples_ddim = _sample_lms_masked(model_wrap_cfg, xi, x0, mask, noise, sigma_sched,
+                                                          extra_args=extra_args,
+                                                          disable=not accelerator.is_main_process)
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                         x_samples_ddim = accelerator.gather(x_samples_ddim)
@@ -593,26 +356,8 @@ def inpainting(prompt: str, init_img, init_mask, ddim_steps: int, n_iter: int, n
                             for x_sample in x_samples_ddim:
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                                 image = Image.fromarray(x_sample.astype(np.uint8))
-                                if not opt.skip_save:
-                                    image.save(os.path.join(sample_path, f"{base_count:05}-{rng_seed + seedit}_{prompt.replace(' ', '_')[:128]}.png"))
                                 output_images.append(image)
-                                base_count += 1
                                 seedit += 1
-
-                        if accelerator.is_main_process and not opt.skip_grid:
-                            all_samples.append(x_samples_ddim)
-
-                if not opt.skip_grid:
-                    # additionally, save as grid
-                    grid = torch.stack(all_samples, 0)
-                    grid = rearrange(grid, 'n b c h w -> (n b) c h w')
-                    grid = make_grid(grid, nrow=n_rows)
-
-                    # to image
-                    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-                    Image.fromarray(grid.astype(np.uint8)).save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
-                    Image.fromarray(grid.astype(np.uint8))
-                    grid_count += 1
     return output_images, rng_seed
 
 
