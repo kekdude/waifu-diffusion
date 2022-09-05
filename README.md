@@ -1,20 +1,23 @@
 ### Krita api plugin
-*warning* This repo and plugin repo are very much WIP
+*WARNING* This repo and plugin repo are very much WIP
 
 Install Krita and plugin
 * Install Krita https://krita.org/en/download/krita-desktop/
 * Run Krita and wait, it takes a minute to launch for the first time
-* Go to Tools > Scripts > Import Python Plugin from Web... and point to https://github.com/kekdude/krita_diffusion
+* [Download the plugin source as zip](https://github.com/kekdude/krita_diffusion/archive/master.zip) 
+* Go to Tools > Scripts > Import Python Plugin from File... and point to the zip you downloaded
 * Restart Krita
 * Go to Settings > Dockers > Krita Diffusion
 
 Run api server
-* activate conda environment for the repo
-* run python scripts/kdiff_api.py
+* update conda environment with `conda env update -f environment.yaml` or install fastapi and uvicorn[standard] packages manually (see environment.yaml for details)
+* activate conda environment for the repo `conda activate ldw`
+* run `python scripts/kdiff_api.py`
 
 Have fun
 
-All thanks goes to CompVis and Stability AI for releasing this codebase! Pretrained models coming soon...
+Thanks to CompVis and Stability AI for releasing this codebase!
+Also thanks to internet hivemind!
 
 # Stable Diffusion
 *Stable Diffusion was made possible thanks to a collaboration with [Stability AI](https://stability.ai/) and [Runway](https://runwayml.com/) and builds upon our previous work:*
