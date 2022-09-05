@@ -1,5 +1,5 @@
 ### Krita api plugin
-*WARNING* This repo and plugin repo are very much WIP
+*WARNING* This repo and [plugin repo](https://github.com/kekdude/krita_diffusion) are very much WIP
 
 Install Krita and plugin
 * Install Krita https://krita.org/en/download/krita-desktop/
