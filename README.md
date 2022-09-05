@@ -1,6 +1,18 @@
-### Any questions? Come hop on by to our Discord server!
+### Krita api plugin
+*warning* This repo and plugin repo are very much WIP
 
-[![Discord Server](https://discordapp.com/api/guilds/930499730843250783/widget.png?style=banner2)](https://discord.gg/Sx6Spmsgx7)
+Install Krita and plugin
+* Install Krita https://krita.org/en/download/krita-desktop/
+* Run Krita and wait, it takes a minute to launch for the first time
+* Go to Tools > Scripts > Import Python Plugin from Web... and point to https://github.com/kekdude/krita_diffusion
+* Restart Krita
+* Go to Settings > Dockers > Krita Diffusion
+
+Run api server
+* activate conda environment for the repo
+* run python scripts/kdiff_api.py
+
+Have fun
 
 All thanks goes to CompVis and Stability AI for releasing this codebase! Pretrained models coming soon...
 
